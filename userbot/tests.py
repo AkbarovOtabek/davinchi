@@ -299,6 +299,40 @@ class UserbotFlowTests(TransactionTestCase):
         self.assertEqual(await profile_statuses(), [Profile.STATUS_SKIPPED])
         self.assertIn("другая анкета", (await skip_reasons())[0])
 
+    @patch("matcher.ai.generate_reply", return_value=dict(FAKE_REPLY))
+    async def test_card_swapped_while_bot_asked_for_text(self, _mocked):
+        """Анкету пролистали после лайка: старый текст не уходит, пишем той, что на экране."""
+        await setup_config()
+
+        class SwappingClient(FakeClient):
+            """Эмулирует ручное пролистывание анкеты сразу после нашего лайка."""
+
+            swap = True
+
+            async def _deliver(self, text, keyboard):
+                await super()._deliver(text, keyboard)
+                if text == ASK_TEXT and self.swap:
+                    self.swap = False
+                    self.userbot._current_card_id += 1
+
+        client = SwappingClient()
+        bot = DavinchiUserbot(client=client)
+        client.userbot = bot
+
+        await bot.handle_incoming(profile_message("Аня, 24, Ташкент"))
+
+        # Лайк нажали, но письмо не отправили — анкета уже не та.
+        self.assertEqual(client.texts, [LIKE_WITH_MESSAGE])
+        self.assertEqual(await sent_texts(), [])
+        self.assertIn("пролистали", (await skip_reasons())[0])
+
+        # Следующая анкета подхватывает открытый запрос текста без повторного лайка.
+        await bot.handle_incoming(profile_message("Лена, 23, Ташкент — люблю горы"))
+
+        self.assertEqual(client.texts, [LIKE_WITH_MESSAGE, FAKE_REPLY["text"], "💌"])
+        self.assertEqual(await sent_texts(), [FAKE_REPLY["text"]])
+        self.assertIn("prompt_reused", await log_events())
+
     async def test_text_is_generated_only_after_the_like(self):
         """Порядок важен: сначала лайк, потом генерация — иначе текст уходит не туда."""
         await setup_config()
